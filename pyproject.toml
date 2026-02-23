@@ -1,0 +1,7 @@
+[project]
+name = "htp"
+version = "0.1.0"
+description = "Hierarchical Tropical Pathfinding — shortest paths via tropical semiring transfer matrices and neural corridor prediction"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
