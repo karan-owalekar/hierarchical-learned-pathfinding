@@ -160,11 +160,19 @@ class Dropdown:
         pygame.draw.rect(surface, BG_DROPDOWN, self.rect, border_radius=BUTTON_RADIUS)
         pygame.draw.rect(surface, BORDER, self.rect, width=1, border_radius=BUTTON_RADIUS)
 
-        display = f"{self.options[self.selected]}  \u25be"
-        txt = font("normal").render(display, True, TEXT_PRIMARY)
+        txt = font("normal").render(self.options[self.selected], True, TEXT_PRIMARY)
         tx = self.rect.x + 8
         ty = self.rect.y + (self.rect.height - txt.get_height()) // 2
         surface.blit(txt, (tx, ty))
+
+        # Draw a small dropdown triangle
+        tri_x = self.rect.right - 16
+        tri_y = self.rect.centery
+        pygame.draw.polygon(surface, TEXT_SECONDARY, [
+            (tri_x - 4, tri_y - 3),
+            (tri_x + 4, tri_y - 3),
+            (tri_x, tri_y + 3),
+        ])
 
         # Expanded options
         if self.open:

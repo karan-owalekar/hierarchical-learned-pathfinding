@@ -78,9 +78,10 @@ class GridView:
             return
         avail_w = self.area.width - 2
         avail_h = self.area.height - 2
-        cs_w = avail_w // self.grid.width
-        cs_h = avail_h // self.grid.height
-        self.cell_size = max(MIN_CELL_SIZE, min(cs_w, cs_h))
+        self.cell_size = max(
+            min(avail_w // self.grid.width, avail_h // self.grid.height),
+            MIN_CELL_SIZE,
+        )
         total_w = self.cell_size * self.grid.width
         total_h = self.cell_size * self.grid.height
         ox = self.area.x + (self.area.width - total_w) // 2
@@ -123,11 +124,14 @@ class GridView:
                     return f"Goal set to ({cell.row}, {cell.col})"
                 return "Cannot place goal on obstacle"
 
-            if event.button == 1:
-                if cell != self.start and cell != self.goal:
+            if event.button == 1 and cell != self.start and cell != self.goal:
+                if self.grid.data[cell.row, cell.col] == 0:
                     self.drawing = True
                     self.grid.data[cell.row, cell.col] = 1
-            elif event.button == 3:
+                else:
+                    self.erasing = True
+                    self.grid.data[cell.row, cell.col] = 0
+            elif event.button == 3 and cell != self.start and cell != self.goal:
                 self.erasing = True
                 self.grid.data[cell.row, cell.col] = 0
 
@@ -150,14 +154,19 @@ class GridView:
         if self.grid is None:
             return
 
-        if self.animation and self.animation.running:
-            self.animation.tick()
-            self.explored = self.animation.explored
-            self.frontier = self.animation.frontier
+        if self.animation:
+            if self.animation.running:
+                self.animation.tick()
+                self.explored = self.animation.explored
+                self.frontier = self.animation.frontier
+            if self.animation.finished and self.animation.final_path:
+                self.path = self.animation.final_path
+                self.animation.final_path = None
 
         ox, oy = self.grid_origin
         cs = self.cell_size
-        inner = cs - CELL_GAP
+        inner = cs - CELL_GAP if cs > 3 else cs
+        radius = CELL_RADIUS if cs > 4 else 0
 
         path_set = {(c.row, c.col) for c in self.path} if self.path else set()
         corridor_cells = self._corridor_cell_set()
@@ -185,7 +194,7 @@ class GridView:
                 else:
                     color = CELL_EMPTY
 
-                pygame.draw.rect(surface, color, rect, border_radius=CELL_RADIUS)
+                pygame.draw.rect(surface, color, rect, border_radius=radius)
 
     # ----- helpers -----
 
@@ -226,11 +235,14 @@ class AnimationController:
         self,
         exploration_steps: list[tuple[set[tuple[int, int]], set[tuple[int, int]]]],
         steps_per_frame: int = 10,
+        final_path: Optional[list[Cell]] = None,
     ) -> None:
         self.steps = exploration_steps
         self.steps_per_frame = steps_per_frame
+        self.final_path = final_path
         self.current = 0
         self.running = True
+        self.finished = False
         self.explored: set[tuple[int, int]] = set()
         self.frontier: set[tuple[int, int]] = set()
 
@@ -243,3 +255,4 @@ class AnimationController:
         self.current = end
         if self.current >= len(self.steps):
             self.running = False
+            self.finished = True

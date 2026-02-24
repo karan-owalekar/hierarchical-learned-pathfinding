@@ -43,7 +43,7 @@ from ui.theme import (
     init_fonts,
 )
 
-GRID_SIZES = [32, 64, 128, 256, 512, 1024]
+GRID_SIZES = [32, 64, 128, 256]
 METHODS = ["Matrix Only", "Neural Only", "Hybrid", "A*", "Dijkstra"]
 MAP_TYPES = ["Random Scatter", "DFS Maze", "Spiral", "Recursive Division", "Rooms & Corridors"]
 
@@ -60,7 +60,10 @@ class App:
         pygame.init()
         init_fonts()
 
-        self.screen = pygame.display.set_mode((1100, 750), pygame.RESIZABLE)
+        info = pygame.display.Info()
+        w = int(info.current_w * 0.95)
+        h = int(info.current_h * 0.95)
+        self.screen = pygame.display.set_mode((w, h), pygame.RESIZABLE)
         pygame.display.set_caption("Hierarchical Learned Pathfinding")
         self.clock = pygame.time.Clock()
 
@@ -70,21 +73,24 @@ class App:
 
         # UI components
         self.grid_size_dd = Dropdown(
-            [str(s) for s in GRID_SIZES], selected=1, width=90, label="Size",
+            [str(s) for s in GRID_SIZES], selected=1, width=100, label="Size",
             on_change=self._on_grid_size_change,
         )
         self.method_dd = Dropdown(
-            METHODS, selected=default_method, width=150, label="Method",
+            METHODS, selected=default_method, width=170, label="Method",
             disabled_indices=disabled,
         )
         self.map_dd = Dropdown(
-            MAP_TYPES, selected=0, width=190, label="Map",
+            MAP_TYPES, selected=0, width=220, label="Map",
             on_change=self._on_generate_map,
         )
-        self.find_btn = Button("Find Path", accent=True, width=110, on_click=self._on_find_path)
-        self.clear_path_btn = Button("Clear Path", width=110, on_click=self._on_clear_path)
-        self.clear_grid_btn = Button("Clear Grid", width=110, on_click=self._on_clear_grid)
+        self.gen_btn = Button("Generate", width=110, on_click=self._on_regenerate)
+        self.find_btn = Button("Find Path", accent=True, width=120, on_click=self._on_find_path)
+        self.clear_path_btn = Button("Clear Path", width=120, on_click=self._on_clear_path)
+        self.clear_grid_btn = Button("Clear Grid", width=120, on_click=self._on_clear_grid)
         self.info_btn = Button("?", square=True, on_click=self._on_info)
+
+        self._map_seed = 0
 
         self.status = StatusBar()
         self.overlay = InfoOverlay()
@@ -92,7 +98,7 @@ class App:
         self.grid_view.block_size = config.block.block_size
 
         self._dropdowns = [self.grid_size_dd, self.method_dd, self.map_dd]
-        self._buttons = [self.find_btn, self.clear_path_btn, self.clear_grid_btn, self.info_btn]
+        self._buttons = [self.gen_btn, self.find_btn, self.clear_path_btn, self.clear_grid_btn, self.info_btn]
 
         # Initialize with a default grid
         self._create_empty_grid(GRID_SIZES[1])
@@ -162,12 +168,13 @@ class App:
         toolbar_rect = pygame.Rect(0, 0, w, TOOLBAR_HEIGHT)
         pygame.draw.rect(self.screen, BG_TOOLBAR, toolbar_rect)
 
-        # Layout toolbar elements
+        # Layout toolbar elements — push down to leave room for labels above
         x = PADDING
-        y = (TOOLBAR_HEIGHT - 34) // 2
-        x = self.grid_size_dd.layout(x, y, 90) + ELEMENT_SPACING
-        x = self.method_dd.layout(x, y, 150) + ELEMENT_SPACING
-        x = self.map_dd.layout(x, y, 190) + ELEMENT_SPACING + 4
+        y = TOOLBAR_HEIGHT - 34 - 8
+        x = self.grid_size_dd.layout(x, y, 100) + ELEMENT_SPACING
+        x = self.method_dd.layout(x, y, 170) + ELEMENT_SPACING
+        x = self.map_dd.layout(x, y, 220) + ELEMENT_SPACING
+        x = self.gen_btn.layout(x, y) + ELEMENT_SPACING + 4
         x = self.find_btn.layout(x, y) + ELEMENT_SPACING
         x = self.clear_path_btn.layout(x, y) + ELEMENT_SPACING
         x = self.clear_grid_btn.layout(x, y) + ELEMENT_SPACING
@@ -201,16 +208,24 @@ class App:
     # ----- callbacks -----
 
     def _on_grid_size_change(self, idx: int, val: str) -> None:
-        size = GRID_SIZES[idx]
-        self._create_empty_grid(size)
-        self.status.set_message(f"Grid size changed to {size}×{size}")
+        self._generate_current_map()
 
     def _on_generate_map(self, idx: int, val: str) -> None:
+        self._map_seed = 0
+        self._generate_current_map()
+
+    def _on_regenerate(self) -> None:
+        self._map_seed += 1
+        self._generate_current_map()
+
+    def _generate_current_map(self) -> None:
         size = GRID_SIZES[self.grid_size_dd.selected]
+        idx = self.map_dd.selected
+        val = MAP_TYPES[idx]
         generators = [generate_random, generate_dfs_maze, generate_spiral,
                       generate_recursive_division, generate_rooms]
         gen = generators[idx]
-        grid, start, goal = gen(size, size)
+        grid, start, goal = gen(size, size, seed=self._map_seed)
         self.grid_view.set_grid(grid, start, goal)
         self.status.set_message(f"Generated {val} map ({size}×{size})")
 
@@ -298,8 +313,9 @@ class App:
             return
 
         speed = max(1, len(steps) // 200)
-        self.grid_view.animation = AnimationController(steps, steps_per_frame=speed)
-        self.grid_view.path = result.path
+        self.grid_view.animation = AnimationController(
+            steps, steps_per_frame=speed, final_path=result.path,
+        )
         if result.path:
             self.status.set_message(
                 f"A*: cost={result.cost:.0f} | len={len(result.path)} | "
@@ -324,8 +340,9 @@ class App:
             return
 
         speed = max(1, len(steps) // 200)
-        self.grid_view.animation = AnimationController(steps, steps_per_frame=speed)
-        self.grid_view.path = result.path
+        self.grid_view.animation = AnimationController(
+            steps, steps_per_frame=speed, final_path=result.path,
+        )
         if result.path:
             self.status.set_message(
                 f"Dijkstra: cost={result.cost:.0f} | len={len(result.path)} | "
@@ -341,6 +358,10 @@ class App:
                 f"{result.mode}: cost={result.cost:.0f} | len={len(result.path)} | "
                 f"corridor={result.corridor_size}/{result.total_blocks} | "
                 f"{result.computation_time_ms:.1f}ms"
+            )
+        elif result.mode == "neural_only":
+            self.status.set_message(
+                "neural_only: no path found — try Hybrid (uses BFS fallback)"
             )
         else:
             self.status.set_message(f"{result.mode}: no path found")
