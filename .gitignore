@@ -8,3 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Data and model artifacts
+checkpoints/
+data/
+results/
+
+# IDE
+.idea/
+.vscode/
+*.swp
