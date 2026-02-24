@@ -1,7 +1,28 @@
 [project]
-name = "htp"
+name = "hlp"
 version = "0.1.0"
-description = "Hierarchical Tropical Pathfinding — shortest paths via tropical semiring transfer matrices and neural corridor prediction"
+description = "Hierarchical Learned Pathfinding — shortest paths via tropical semiring transfer matrices and neural corridor prediction"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "numpy",
+    "numba",
+    "torch",
+    "matplotlib",
+    "pyyaml",
+    "pygame",
+    "scipy",
+    "tqdm",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

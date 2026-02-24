@@ -1,0 +1,31 @@
+grid:
+  height: 256
+  width: 256
+  obstacle_density: 0.2
+
+block:
+  block_size: 16
+
+neural:
+  d: 64
+  max_levels: 12
+  grid_resolution: 8
+  checkpoint_path: checkpoints/best.pt
+
+train:
+  num_train: 50000
+  num_val: 5000
+  batch_size: 64
+  min_path_distance: 10
+  teacher_epochs: 30
+  lr_teacher: 0.001
+  adversarial_rounds: 5
+  adversarial_queries: 10000
+  lr_adversarial: 0.0001
+  pos_weight: 10.0
+  early_stop_patience: 5
+
+inference:
+  mode: hybrid
+  activation_threshold: 0.3
+  verify_optimality: false
