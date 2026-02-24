@@ -40,14 +40,14 @@ CELL_CORRIDOR = (80, 120, 60)
 # Dimensions
 # ---------------------------------------------------------------------------
 
-TOOLBAR_HEIGHT = 56
+TOOLBAR_HEIGHT = 72
 STATUS_HEIGHT = 36
 BUTTON_HEIGHT = 34
 BUTTON_RADIUS = 6
 CELL_RADIUS = 2
 OVERLAY_RADIUS = 14
 CELL_GAP = 1
-MIN_CELL_SIZE = 10
+MIN_CELL_SIZE = 2
 PADDING = 12
 ELEMENT_SPACING = 10
 
