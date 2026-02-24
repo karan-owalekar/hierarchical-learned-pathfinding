@@ -35,6 +35,27 @@ CELL_PATH = (56, 132, 244)
 CELL_EXPLORED = (60, 60, 90)
 CELL_FRONTIER = (100, 80, 140)
 CELL_CORRIDOR = (80, 120, 60)
+QUAD_CANDIDATE = CELL_EXPLORED   # same purple as A* explored
+QUAD_REJECTED = (150, 40, 40)
+QUAD_BORDER_REJ = (210, 60, 60)
+
+
+def corridor_level_color(level: int, max_levels: int = 10) -> tuple[int, int, int]:
+    """Gradually shift accepted block color from purple toward teal/green."""
+    t = min(level / max(max_levels - 1, 1), 1.0)
+    r = int(60 + t * 20)       # 60 → 80
+    g = int(60 + t * 60)       # 60 → 120
+    b = int(90 - t * 30)       # 90 → 60
+    return (r, g, b)
+
+
+def corridor_level_border(level: int, max_levels: int = 10) -> tuple[int, int, int]:
+    """Border color matching the level fill, but brighter."""
+    t = min(level / max(max_levels - 1, 1), 1.0)
+    r = int(90 + t * 20)       # 90 → 110
+    g = int(90 + t * 80)       # 90 → 170
+    b = int(130 - t * 40)      # 130 → 90
+    return (r, g, b)
 
 # ---------------------------------------------------------------------------
 # Dimensions

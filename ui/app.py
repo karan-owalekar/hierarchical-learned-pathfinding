@@ -13,7 +13,7 @@ import torch
 
 from hlp.config import Config
 from hlp.grid import Cell, Grid
-from hlp.neural.model import QuadTreeConvNet
+from hlp.neural.model import QuadTreeConvNet, recursive_neural_inference
 from hlp.pipeline import (
     PathResult,
     run_hybrid,
@@ -22,8 +22,8 @@ from hlp.pipeline import (
 )
 from baselines.astar import astar, astar_generator
 from baselines.dijkstra import dijkstra, dijkstra_generator
-from ui.components import Button, Dropdown, InfoOverlay, StatusBar
-from ui.grid_view import AnimationController, GridView
+from ui.components import Button, Dropdown, InfoOverlay, StatusBar, ToggleButton
+from ui.grid_view import AnimationController, CorridorAnimationController, GridView
 from ui.map_generators import (
     generate_dfs_maze,
     generate_random,
@@ -85,6 +85,9 @@ class App:
             on_change=self._on_generate_map,
         )
         self.gen_btn = Button("Generate", width=110, on_click=self._on_regenerate)
+        self.vis_toggle = ToggleButton(
+            text_on="Visualize", text_off="Visualize", active=True, width=120,
+        )
         self.find_btn = Button("Find Path", accent=True, width=120, on_click=self._on_find_path)
         self.clear_path_btn = Button("Clear Path", width=120, on_click=self._on_clear_path)
         self.clear_grid_btn = Button("Clear Grid", width=120, on_click=self._on_clear_grid)
@@ -98,7 +101,7 @@ class App:
         self.grid_view.block_size = config.block.block_size
 
         self._dropdowns = [self.grid_size_dd, self.method_dd, self.map_dd]
-        self._buttons = [self.gen_btn, self.find_btn, self.clear_path_btn, self.clear_grid_btn, self.info_btn]
+        self._buttons = [self.gen_btn, self.vis_toggle, self.find_btn, self.clear_path_btn, self.clear_grid_btn, self.info_btn]
 
         # Initialize with a default grid
         self._create_empty_grid(GRID_SIZES[1])
@@ -174,7 +177,8 @@ class App:
         x = self.grid_size_dd.layout(x, y, 100) + ELEMENT_SPACING
         x = self.method_dd.layout(x, y, 170) + ELEMENT_SPACING
         x = self.map_dd.layout(x, y, 220) + ELEMENT_SPACING
-        x = self.gen_btn.layout(x, y) + ELEMENT_SPACING + 4
+        x = self.gen_btn.layout(x, y) + ELEMENT_SPACING
+        x = self.vis_toggle.layout(x, y) + ELEMENT_SPACING + 4
         x = self.find_btn.layout(x, y) + ELEMENT_SPACING
         x = self.clear_path_btn.layout(x, y) + ELEMENT_SPACING
         x = self.clear_grid_btn.layout(x, y) + ELEMENT_SPACING
@@ -243,19 +247,19 @@ class App:
         self.status.set_message(f"Running {method}...")
         pygame.display.flip()
 
+        visualize = self.vis_toggle.active
+
         if method == "A*":
-            self._run_astar(grid, source, goal)
+            self._run_astar(grid, source, goal, visualize)
         elif method == "Dijkstra":
-            self._run_dijkstra(grid, source, goal)
+            self._run_dijkstra(grid, source, goal, visualize)
         elif method == "Matrix Only":
             result = run_matrix_only(grid, source, goal, self.config)
             self._apply_hlp_result(result)
         elif method == "Neural Only" and self.model is not None:
-            result = run_neural_only(grid, source, goal, self.model, self.config)
-            self._apply_hlp_result(result)
+            self._run_neural_only(grid, source, goal, visualize)
         elif method == "Hybrid" and self.model is not None:
-            result = run_hybrid(grid, source, goal, self.model, self.config)
-            self._apply_hlp_result(result)
+            self._run_hybrid(grid, source, goal, visualize)
         else:
             self.status.set_message("Model not loaded — select a different method")
 
@@ -297,7 +301,7 @@ class App:
         except Exception:
             self.model_available = False
 
-    def _run_astar(self, grid: Grid, source: Cell, goal: Cell) -> None:
+    def _run_astar(self, grid: Grid, source: Cell, goal: Cell, visualize: bool) -> None:
         gen = astar_generator(grid, source, goal)
         steps: list[tuple[set[tuple[int, int]], set[tuple[int, int]]]] = []
         result = None
@@ -312,10 +316,14 @@ class App:
             self.status.set_message("A*: no path found")
             return
 
-        speed = max(1, len(steps) // 200)
-        self.grid_view.animation = AnimationController(
-            steps, steps_per_frame=speed, final_path=result.path,
-        )
+        if visualize:
+            speed = max(1, len(steps) // 200)
+            self.grid_view.animation = AnimationController(
+                steps, steps_per_frame=speed, final_path=result.path,
+            )
+        else:
+            self.grid_view.path = result.path
+
         if result.path:
             self.status.set_message(
                 f"A*: cost={result.cost:.0f} | len={len(result.path)} | "
@@ -324,7 +332,7 @@ class App:
         else:
             self.status.set_message("A*: no path found")
 
-    def _run_dijkstra(self, grid: Grid, source: Cell, goal: Cell) -> None:
+    def _run_dijkstra(self, grid: Grid, source: Cell, goal: Cell, visualize: bool) -> None:
         gen = dijkstra_generator(grid, source, goal)
         steps: list[tuple[set[tuple[int, int]], set[tuple[int, int]]]] = []
         result = None
@@ -339,10 +347,14 @@ class App:
             self.status.set_message("Dijkstra: no path found")
             return
 
-        speed = max(1, len(steps) // 200)
-        self.grid_view.animation = AnimationController(
-            steps, steps_per_frame=speed, final_path=result.path,
-        )
+        if visualize:
+            speed = max(1, len(steps) // 200)
+            self.grid_view.animation = AnimationController(
+                steps, steps_per_frame=speed, final_path=result.path,
+            )
+        else:
+            self.grid_view.path = result.path
+
         if result.path:
             self.status.set_message(
                 f"Dijkstra: cost={result.cost:.0f} | len={len(result.path)} | "
@@ -351,8 +363,47 @@ class App:
         else:
             self.status.set_message("Dijkstra: no path found")
 
+    def _run_neural_only(self, grid: Grid, source: Cell, goal: Cell, visualize: bool) -> None:
+        result = run_neural_only(grid, source, goal, self.model, self.config)
+        if visualize and self.model is not None:
+            threshold = self.config.inference.activation_threshold
+            _, history = recursive_neural_inference(
+                self.model, grid.data, grid.height, grid.width,
+                (source.row, source.col), (goal.row, goal.col),
+                stop_at_size=1,
+                activation_threshold=threshold,
+                record_history=True,
+            )
+            self.grid_view.corridor_anim = CorridorAnimationController(
+                history, final_path=result.path,
+            )
+        else:
+            self.grid_view.path = result.path
+        self._set_hlp_status(result)
+
+    def _run_hybrid(self, grid: Grid, source: Cell, goal: Cell, visualize: bool) -> None:
+        result = run_hybrid(grid, source, goal, self.model, self.config)
+        if visualize and self.model is not None:
+            threshold = self.config.inference.activation_threshold
+            _, history = recursive_neural_inference(
+                self.model, grid.data, grid.height, grid.width,
+                (source.row, source.col), (goal.row, goal.col),
+                stop_at_size=1,
+                activation_threshold=threshold,
+                record_history=True,
+            )
+            self.grid_view.corridor_anim = CorridorAnimationController(
+                history, final_path=result.path,
+            )
+        else:
+            self.grid_view.path = result.path
+        self._set_hlp_status(result)
+
     def _apply_hlp_result(self, result: PathResult) -> None:
         self.grid_view.path = result.path
+        self._set_hlp_status(result)
+
+    def _set_hlp_status(self, result: PathResult) -> None:
         if result.path:
             self.status.set_message(
                 f"{result.mode}: cost={result.cost:.0f} | len={len(result.path)} | "
