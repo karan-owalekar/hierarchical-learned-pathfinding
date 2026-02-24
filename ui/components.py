@@ -91,6 +91,55 @@ class Button:
 
 
 # ---------------------------------------------------------------------------
+# ToggleButton
+# ---------------------------------------------------------------------------
+
+class ToggleButton:
+    def __init__(
+        self,
+        text_on: str = "Visualize ON",
+        text_off: str = "Visualize OFF",
+        active: bool = True,
+        width: int = 140,
+    ) -> None:
+        self.text_on = text_on
+        self.text_off = text_off
+        self.active = active
+        self.rect = pygame.Rect(0, 0, width, BUTTON_HEIGHT)
+        self.hovered = False
+
+    def layout(self, x: int, y: int, width: Optional[int] = None) -> int:
+        if width is not None:
+            self.rect.width = width
+        self.rect.x = x
+        self.rect.y = y
+        return self.rect.right
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self.rect.collidepoint(event.pos):
+                self.active = not self.active
+                return True
+        return False
+
+    def update(self, mouse_pos: tuple[int, int]) -> None:
+        self.hovered = self.rect.collidepoint(mouse_pos)
+
+    def draw(self, surface: pygame.Surface) -> None:
+        bg = BG_ACCENT_HOVER if self.active and self.hovered else (
+            BG_ACCENT if self.active else (
+                BG_BUTTON_HOVER if self.hovered else BG_BUTTON
+            )
+        )
+        pygame.draw.rect(surface, bg, self.rect, border_radius=BUTTON_RADIUS)
+        text = self.text_on if self.active else self.text_off
+        txt = font("normal").render(text, True, TEXT_PRIMARY)
+        tx = self.rect.x + (self.rect.width - txt.get_width()) // 2
+        ty = self.rect.y + (self.rect.height - txt.get_height()) // 2
+        surface.blit(txt, (tx, ty))
+
+
+# ---------------------------------------------------------------------------
 # Dropdown
 # ---------------------------------------------------------------------------
 

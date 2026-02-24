@@ -1,4 +1,4 @@
-"""Grid rendering, cell interaction, and A*/Dijkstra animation controller."""
+"""Grid rendering, cell interaction, and animation controllers."""
 
 from __future__ import annotations
 
@@ -21,6 +21,11 @@ from ui.theme import (
     CELL_START,
     CELL_GAP,
     MIN_CELL_SIZE,
+    QUAD_BORDER_REJ,
+    QUAD_CANDIDATE,
+    QUAD_REJECTED,
+    corridor_level_border,
+    corridor_level_color,
 )
 
 
@@ -50,8 +55,9 @@ class GridView:
         self.placing_start = False
         self.placing_goal = False
 
-        # Animation
+        # Animation (A*/Dijkstra expansion or corridor level-by-level)
         self.animation: Optional[AnimationController] = None
+        self.corridor_anim: Optional[CorridorAnimationController] = None
 
     # ----- layout -----
 
@@ -72,6 +78,7 @@ class GridView:
         self.frontier = set()
         self.corridor_blocks = set()
         self.animation = None
+        self.corridor_anim = None
 
     def _recalc_cell_size(self) -> None:
         if self.grid is None:
@@ -163,6 +170,13 @@ class GridView:
                 self.path = self.animation.final_path
                 self.animation.final_path = None
 
+        if self.corridor_anim:
+            if self.corridor_anim.running:
+                self.corridor_anim.tick()
+            if self.corridor_anim.finished and self.corridor_anim.final_path:
+                self.path = self.corridor_anim.final_path
+                self.corridor_anim.final_path = None
+
         ox, oy = self.grid_origin
         cs = self.cell_size
         inner = cs - CELL_GAP if cs > 3 else cs
@@ -170,6 +184,11 @@ class GridView:
 
         path_set = {(c.row, c.col) for c in self.path} if self.path else set()
         corridor_cells = self._corridor_cell_set()
+
+        # Pre-compute corridor animation overlay: maps (r,c) -> color
+        corr_cell_colors: dict[tuple[int, int], tuple[int, int, int]] = {}
+        if self.corridor_anim and self.grid:
+            corr_cell_colors = self.corridor_anim.cell_color_map(self.grid)
 
         for r in range(self.grid.height):
             for c in range(self.grid.width):
@@ -187,6 +206,8 @@ class GridView:
                     color = CELL_FRONTIER
                 elif (r, c) in self.explored:
                     color = CELL_EXPLORED
+                elif (r, c) in corr_cell_colors:
+                    color = corr_cell_colors[(r, c)]
                 elif (r, c) in corridor_cells:
                     color = CELL_CORRIDOR
                 elif self.grid.data[r, c] == 1:
@@ -195,6 +216,45 @@ class GridView:
                     color = CELL_EMPTY
 
                 pygame.draw.rect(surface, color, rect, border_radius=radius)
+
+        if self.corridor_anim:
+            self._draw_corridor_anim_borders(surface)
+
+    def _draw_block_rect(
+        self,
+        surface: pygame.Surface,
+        r0: int, r1: int, c0: int, c1: int,
+        color: tuple[int, int, int],
+        width: int,
+    ) -> None:
+        if self.grid is None:
+            return
+        ox, oy = self.grid_origin
+        cs = self.cell_size
+        r1 = min(r1, self.grid.height)
+        c1 = min(c1, self.grid.width)
+        px = ox + c0 * cs
+        py = oy + r0 * cs
+        pw = (c1 - c0) * cs
+        ph = (r1 - r0) * cs
+        if pw > 0 and ph > 0:
+            rect = pygame.Rect(px, py, pw, ph)
+            pygame.draw.rect(surface, color, rect, width=width)
+
+    def _draw_corridor_anim_borders(self, surface: pygame.Surface) -> None:
+        if not self.corridor_anim or self.grid is None:
+            return
+        cs = self.cell_size
+        bw = max(1, cs // 5)
+
+        level_blocks, rej_blocks, max_levels = self.corridor_anim.border_info()
+
+        for lvl, blocks in level_blocks:
+            clr = corridor_level_border(lvl, max_levels)
+            for r0, r1, c0, c1 in blocks:
+                self._draw_block_rect(surface, r0, r1, c0, c1, clr, bw)
+        for r0, r1, c0, c1 in rej_blocks:
+            self._draw_block_rect(surface, r0, r1, c0, c1, QUAD_BORDER_REJ, bw)
 
     # ----- helpers -----
 
@@ -256,3 +316,131 @@ class AnimationController:
         if self.current >= len(self.steps):
             self.running = False
             self.finished = True
+
+
+# ---------------------------------------------------------------------------
+# Corridor animation controller for Neural / Hybrid level-by-level expansion
+# ---------------------------------------------------------------------------
+
+class CorridorAnimationController:
+    """Animates the quadtree corridor prediction step by step.
+
+    Each level has three phases:
+      Phase 0 ("candidates"): All children of active parents appear in
+          the same purple as A* explored cells — the network is evaluating.
+      Phase 1 ("decide"):     Rejected quadrants turn red; accepted stay
+          purple — the network has decided.
+      Phase 2 ("cleanup"):    Red quadrants fade away; accepted blocks
+          shift to their level-specific color.
+
+    Accepted blocks from earlier levels remain visible with gradually
+    shifting colors so you can see the refinement deepening.
+    """
+
+    CANDIDATE_FRAMES = 15
+    DECIDE_FRAMES = 20
+    CLEANUP_FRAMES = 10
+
+    def __init__(
+        self,
+        history: list[dict],
+        final_path: Optional[list[Cell]] = None,
+    ) -> None:
+        self.history = history
+        self.final_path = final_path
+        self.max_levels = max(len(history), 1)
+        self.current_level = 0
+        self.phase = 0
+        self.frame_count = 0
+        self.running = bool(history)
+        self.finished = False
+
+        # (level, blocks) pairs for previously settled levels
+        self._settled: list[tuple[int, list[tuple[int, int, int, int]]]] = []
+
+    def tick(self) -> None:
+        if not self.running:
+            return
+        self.frame_count += 1
+        limits = [self.CANDIDATE_FRAMES, self.DECIDE_FRAMES, self.CLEANUP_FRAMES]
+        if self.frame_count >= limits[self.phase]:
+            self.frame_count = 0
+            if self.phase < 2:
+                self.phase += 1
+            else:
+                entry = self.history[self.current_level]
+                self._settled.append(
+                    (self.current_level, entry["accepted"])
+                )
+                self.phase = 0
+                self.current_level += 1
+                if self.current_level >= len(self.history):
+                    self.running = False
+                    self.finished = True
+
+    def cell_color_map(
+        self, grid: Grid,
+    ) -> dict[tuple[int, int], tuple[int, int, int]]:
+        """Map (r, c) → fill color for all corridor-animation cells."""
+        result: dict[tuple[int, int], tuple[int, int, int]] = {}
+
+        for lvl, blocks in self._settled:
+            clr = corridor_level_color(lvl, self.max_levels)
+            for r0, r1, c0, c1 in blocks:
+                for r in range(r0, min(r1, grid.height)):
+                    for c in range(c0, min(c1, grid.width)):
+                        if grid.data[r, c] == 0:
+                            result[(r, c)] = clr
+
+        if self.current_level >= len(self.history):
+            return result
+
+        entry = self.history[self.current_level]
+
+        if self.phase == 0:
+            for r0, r1, c0, c1 in entry["accepted"]:
+                for r in range(r0, min(r1, grid.height)):
+                    for c in range(c0, min(c1, grid.width)):
+                        if grid.data[r, c] == 0:
+                            result[(r, c)] = QUAD_CANDIDATE
+        elif self.phase == 1:
+            for r0, r1, c0, c1 in entry["accepted"]:
+                for r in range(r0, min(r1, grid.height)):
+                    for c in range(c0, min(c1, grid.width)):
+                        if grid.data[r, c] == 0:
+                            result[(r, c)] = QUAD_CANDIDATE
+        else:
+            clr = corridor_level_color(self.current_level, self.max_levels)
+            for r0, r1, c0, c1 in entry["accepted"]:
+                for r in range(r0, min(r1, grid.height)):
+                    for c in range(c0, min(c1, grid.width)):
+                        if grid.data[r, c] == 0:
+                            result[(r, c)] = clr
+
+        return result
+
+    def border_info(
+        self,
+    ) -> tuple[
+        list[tuple[int, list[tuple[int, int, int, int]]]],
+        list[tuple[int, int, int, int]],
+        int,
+    ]:
+        """Return (level_blocks, rejected_blocks, max_levels) for borders."""
+        level_blocks = list(self._settled)
+        rej: list[tuple[int, int, int, int]] = []
+
+        if self.current_level < len(self.history):
+            entry = self.history[self.current_level]
+            if self.phase <= 1:
+                level_blocks.append(
+                    (self.current_level, entry["accepted"])
+                )
+            else:
+                level_blocks.append(
+                    (self.current_level, entry["accepted"])
+                )
+            if self.phase == 1:
+                rej = entry["rejected"]
+
+        return level_blocks, rej, self.max_levels

@@ -234,12 +234,22 @@ def recursive_neural_inference(
     *,
     stop_at_size: int = 1,
     activation_threshold: float = 0.5,
-) -> set[tuple[int, int]]:
+    record_history: bool = False,
+) -> (set[tuple[int, int]]
+      | tuple[set[tuple[int, int]], list[dict]]):
     """Batched level-by-level corridor prediction.
 
     At each level, all active blocks are downsampled to 8×8, processed in
     a single batched forward pass, and children of active quadrants are
     queued for the next level. No BFS or embedding propagation anywhere.
+
+    If *record_history* is True, returns ``(active_cells, history)`` where
+    each entry in *history* is a dict::
+
+        {"parents": [...], "accepted": [...], "rejected": [...]}
+
+    with block coordinates ``(r0, r1, c0, c1)`` showing which parent
+    blocks were evaluated and which children were accepted/rejected.
     """
     model.eval()
     device = next(model.parameters()).device
@@ -256,6 +266,7 @@ def recursive_neural_inference(
         (0, padded_size, 0, padded_size),
     ]
     active_cells: set[tuple[int, int]] = set()
+    history: list[dict] = []
 
     with torch.no_grad():
         for level in range(num_levels + 1):
@@ -297,6 +308,9 @@ def recursive_neural_inference(
             act = model(grid_batch, pos_batch, level)
 
             next_items: list[tuple[int, int, int, int]] = []
+            accepted: list[tuple[int, int, int, int]] = []
+            rejected: list[tuple[int, int, int, int]] = []
+
             for wi, (r0, r1, c0, c1) in enumerate(recurse):
                 mr, mc = (r0 + r1) // 2, (c0 + c1) // 2
                 quads = [(r0, mr, c0, mc), (r0, mr, mc, c1),
@@ -304,9 +318,22 @@ def recursive_neural_inference(
                 for qi, (qr0, qr1, qc0, qc1) in enumerate(quads):
                     if act[wi, qi].item() > activation_threshold:
                         next_items.append((qr0, qr1, qc0, qc1))
+                        accepted.append((qr0, qr1, qc0, qc1))
+                    else:
+                        rejected.append((qr0, qr1, qc0, qc1))
+
+            if record_history:
+                history.append({
+                    "parents": list(recurse),
+                    "accepted": accepted,
+                    "rejected": rejected,
+                })
 
             work_items = next_items
 
     active_cells.add(source)
     active_cells.add(goal)
+
+    if record_history:
+        return active_cells, history
     return active_cells
