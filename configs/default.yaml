@@ -22,7 +22,7 @@ train:
   adversarial_rounds: 5
   adversarial_queries: 10000
   lr_adversarial: 0.0001
-  pos_weight: 10.0
+  pos_weight: 5.0
   early_stop_patience: 5
 
 inference:

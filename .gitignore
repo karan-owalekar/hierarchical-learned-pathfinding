@@ -9,10 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
-# Data and model artifacts
-checkpoints/
+# Data and results (large/generated)
 data/
 results/
+
+# Checkpoint directory but keep trained models
+checkpoints/*
+!checkpoints/*.pt
 
 # IDE
 .idea/
