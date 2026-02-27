@@ -3,6 +3,13 @@
 Shortest-path search on 2D obstacle grids, accelerated by a neural network that
 learns to throw away most of the map before the actual search begins.
 
+<p align="center">
+  <img src="media/dfs_maze.gif" width="280" alt="DFS Maze">
+  <img src="media/rooms.gif" width="280" alt="Rooms & Corridors">
+  <img src="media/spiral.gif" width="280" alt="Spiral">
+</p>
+<p align="center"><em>Corridor prediction on DFS Maze, Rooms & Corridors, and Spiral maps. The network progressively narrows down quadtree blocks (purple → green) until only a thin corridor remains, then finds the shortest path (blue) inside it.</em></p>
+
 ## How it works
 
 Classical pathfinding (A\*, BFS, Dijkstra) touches every reachable cell.
