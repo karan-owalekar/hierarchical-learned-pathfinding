@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 
-from hlp.grid import Cell, Grid, bfs_shortest_path
+from hlp.grid import Cell, Grid, bfs_shortest_path, generate_grid
 
 
 # ---------------------------------------------------------------------------
@@ -17,15 +17,13 @@ from hlp.grid import Cell, Grid, bfs_shortest_path
 def generate_random(
     h: int,
     w: int,
-    density: float = 0.25,
+    density: float = 0.2,
     seed: Optional[int] = None,
 ) -> tuple[Grid, Cell, Cell]:
+    grid = generate_grid(h, w, density, seed=seed, ensure_connected=False)
     rng = random.Random(seed)
-    np_rng = np.random.RandomState(seed)
-
-    data = (np_rng.random((h, w)) < density).astype(np.uint8)
-    start, goal = _place_start_goal(data, rng)
-    return Grid(data), start, goal
+    start, goal = _place_start_goal(grid.data, rng)
+    return grid, start, goal
 
 
 def generate_dfs_maze(
@@ -311,3 +309,20 @@ def _carve_corridor(
             data[max(0, min(r, h - 1)), max(0, min(c, w - 1))] = 0
             c += 1 if c2 > c else -1
     data[max(0, min(r2, h - 1)), max(0, min(c2, w - 1))] = 0
+
+
+# ---------------------------------------------------------------------------
+# Map type registry
+# ---------------------------------------------------------------------------
+
+MAP_TYPE_KEYS = [
+    "random_scatter", "dfs_maze", "spiral", "recursive_division", "rooms",
+]
+MAP_TYPE_NAMES = [
+    "Random Scatter", "DFS Maze", "Spiral",
+    "Recursive Division", "Rooms & Corridors",
+]
+MAP_TYPE_GENERATORS = dict(zip(MAP_TYPE_KEYS, [
+    generate_random, generate_dfs_maze, generate_spiral,
+    generate_recursive_division, generate_rooms,
+]))

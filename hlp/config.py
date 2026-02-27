@@ -39,7 +39,7 @@ class TrainConfig:
     adversarial_rounds: int = 5
     adversarial_queries: int = 10000
     lr_adversarial: float = 1e-4
-    pos_weight: float = 10.0
+    pos_weight: float = 5.0
     early_stop_patience: int = 5
 
 

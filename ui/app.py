@@ -25,6 +25,9 @@ from baselines.dijkstra import dijkstra, dijkstra_generator
 from ui.components import Button, Dropdown, InfoOverlay, StatusBar, ToggleButton
 from ui.grid_view import AnimationController, CorridorAnimationController, GridView
 from ui.map_generators import (
+    MAP_TYPE_GENERATORS,
+    MAP_TYPE_KEYS,
+    MAP_TYPE_NAMES,
     generate_dfs_maze,
     generate_random,
     generate_recursive_division,
@@ -45,7 +48,7 @@ from ui.theme import (
 
 GRID_SIZES = [32, 64, 128, 256]
 METHODS = ["Matrix Only", "Neural Only", "Hybrid", "A*", "Dijkstra"]
-MAP_TYPES = ["Random Scatter", "DFS Maze", "Spiral", "Recursive Division", "Rooms & Corridors"]
+MAP_TYPES = MAP_TYPE_NAMES
 
 NEURAL_METHOD_INDICES = {1, 2}  # Neural Only, Hybrid
 
@@ -53,9 +56,9 @@ NEURAL_METHOD_INDICES = {1, 2}  # Neural Only, Hybrid
 class App:
     def __init__(self, config: Config) -> None:
         self.config = config
+        self.models: dict[str, QuadTreeConvNet] = {}
         self.model: Optional[QuadTreeConvNet] = None
         self.model_available = False
-        self._load_model()
 
         pygame.init()
         init_fonts()
@@ -67,22 +70,23 @@ class App:
         pygame.display.set_caption("Hierarchical Learned Pathfinding")
         self.clock = pygame.time.Clock()
 
-        # Determine disabled method indices
-        disabled = NEURAL_METHOD_INDICES if not self.model_available else set()
-        default_method = 2 if self.model_available else 3  # Hybrid or A*
-
         # UI components
         self.grid_size_dd = Dropdown(
             [str(s) for s in GRID_SIZES], selected=1, width=100, label="Size",
             on_change=self._on_grid_size_change,
         )
-        self.method_dd = Dropdown(
-            METHODS, selected=default_method, width=170, label="Method",
-            disabled_indices=disabled,
-        )
         self.map_dd = Dropdown(
             MAP_TYPES, selected=0, width=220, label="Map",
             on_change=self._on_generate_map,
+        )
+
+        self._load_models()
+
+        disabled = NEURAL_METHOD_INDICES if not self.model_available else set()
+        default_method = 2 if self.model_available else 3  # Hybrid or A*
+        self.method_dd = Dropdown(
+            METHODS, selected=default_method, width=170, label="Method",
+            disabled_indices=disabled,
         )
         self.gen_btn = Button("Generate", width=110, on_click=self._on_regenerate)
         self.vis_toggle = ToggleButton(
@@ -216,6 +220,7 @@ class App:
 
     def _on_generate_map(self, idx: int, val: str) -> None:
         self._map_seed = 0
+        self._update_active_model()
         self._generate_current_map()
 
     def _on_regenerate(self) -> None:
@@ -225,13 +230,12 @@ class App:
     def _generate_current_map(self) -> None:
         size = GRID_SIZES[self.grid_size_dd.selected]
         idx = self.map_dd.selected
-        val = MAP_TYPES[idx]
-        generators = [generate_random, generate_dfs_maze, generate_spiral,
-                      generate_recursive_division, generate_rooms]
-        gen = generators[idx]
+        key = MAP_TYPE_KEYS[idx]
+        name = MAP_TYPE_NAMES[idx]
+        gen = MAP_TYPE_GENERATORS[key]
         grid, start, goal = gen(size, size, seed=self._map_seed)
         self.grid_view.set_grid(grid, start, goal)
-        self.status.set_message(f"Generated {val} map ({size}×{size})")
+        self.status.set_message(f"Generated {name} map ({size}×{size})")
 
     def _on_find_path(self) -> None:
         if self.grid_view.grid is None or self.grid_view.start is None or self.grid_view.goal is None:
@@ -282,24 +286,40 @@ class App:
         grid = Grid(np.zeros((size, size), dtype=np.uint8))
         self.grid_view.set_grid(grid)
 
-    def _load_model(self) -> None:
-        ckpt = Path(self.config.neural.checkpoint_path)
-        if not ckpt.exists():
-            self.model_available = False
-            return
-        try:
-            nc = self.config.neural
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            self.model = QuadTreeConvNet(
-                d=nc.d,
-                max_levels=nc.max_levels,
-                grid_resolution=nc.grid_resolution,
-            ).to(device)
-            self.model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
-            self.model.eval()
-            self.model_available = True
-        except Exception:
-            self.model_available = False
+    def _load_models(self) -> None:
+        nc = self.config.neural
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        ckpt_dir = Path(nc.checkpoint_path).parent
+
+        def _try_load(path: Path) -> Optional[QuadTreeConvNet]:
+            if not path.exists():
+                return None
+            try:
+                m = QuadTreeConvNet(
+                    d=nc.d, max_levels=nc.max_levels,
+                    grid_resolution=nc.grid_resolution,
+                ).to(device)
+                m.load_state_dict(torch.load(path, map_location=device, weights_only=True))
+                m.eval()
+                return m
+            except Exception:
+                return None
+
+        for key in MAP_TYPE_KEYS:
+            m = _try_load(ckpt_dir / f"best_{key}.pt")
+            if m is not None:
+                self.models[key] = m
+
+        fallback = _try_load(Path(nc.checkpoint_path))
+        if fallback is not None:
+            self.models["_default"] = fallback
+
+        self._update_active_model()
+
+    def _update_active_model(self) -> None:
+        key = MAP_TYPE_KEYS[self.map_dd.selected]
+        self.model = self.models.get(key) or self.models.get("_default")
+        self.model_available = self.model is not None
 
     def _run_astar(self, grid: Grid, source: Cell, goal: Cell, visualize: bool) -> None:
         gen = astar_generator(grid, source, goal)

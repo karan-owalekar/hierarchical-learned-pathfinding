@@ -163,6 +163,7 @@ def generate_flat_dataset(
     min_path_distance: int = 10,
     grid_resolution: int = GRID_RES,
     seed: int = 42,
+    map_type: Optional[str] = None,
 ) -> None:
     """Generate flat per-node training examples using the BFS oracle."""
     out = Path(output_dir)
@@ -173,6 +174,11 @@ def generate_flat_dataset(
     if densities is None:
         densities = [0.1, 0.2, 0.3]
 
+    gen_fn = None
+    if map_type and map_type != "random_scatter":
+        from ui.map_generators import MAP_TYPE_GENERATORS
+        gen_fn = MAP_TYPE_GENERATORS.get(map_type)
+
     rng = np.random.RandomState(seed)
     generated = 0
     pbar = tqdm(total=num_examples, desc="Generating flat data", unit="ex")
@@ -182,7 +188,13 @@ def generate_flat_dataset(
         dens = float(rng.choice(densities))
         grid_seed = int(rng.randint(0, 2**31))
 
-        grid = generate_grid(gs, gs, dens, seed=grid_seed, ensure_connected=False)
+        if gen_fn is not None:
+            try:
+                grid, _, _ = gen_fn(gs, gs, density=dens, seed=grid_seed)
+            except TypeError:
+                grid, _, _ = gen_fn(gs, gs, seed=grid_seed)
+        else:
+            grid = generate_grid(gs, gs, dens, seed=grid_seed, ensure_connected=False)
         free_cells = list(zip(*np.where(grid.data == 0)))
         if len(free_cells) < 2:
             continue
@@ -232,6 +244,7 @@ def generate_recursive_dataset(
     densities: Optional[list[float]] = None,
     min_path_distance: int = 10,
     seed: int = 42,
+    map_type: Optional[str] = None,
 ) -> None:
     """Generate full (grid, source, goal, path) queries for end-to-end validation."""
     out = Path(output_dir)
@@ -242,6 +255,11 @@ def generate_recursive_dataset(
     if densities is None:
         densities = [0.1, 0.2, 0.3]
 
+    gen_fn = None
+    if map_type and map_type != "random_scatter":
+        from ui.map_generators import MAP_TYPE_GENERATORS
+        gen_fn = MAP_TYPE_GENERATORS.get(map_type)
+
     rng = np.random.RandomState(seed)
     generated = 0
     pbar = tqdm(total=num_queries, desc="Generating recursive data", unit="query")
@@ -251,7 +269,13 @@ def generate_recursive_dataset(
         dens = float(rng.choice(densities))
         grid_seed = int(rng.randint(0, 2**31))
 
-        grid = generate_grid(gs, gs, dens, seed=grid_seed, ensure_connected=False)
+        if gen_fn is not None:
+            try:
+                grid, _, _ = gen_fn(gs, gs, density=dens, seed=grid_seed)
+            except TypeError:
+                grid, _, _ = gen_fn(gs, gs, seed=grid_seed)
+        else:
+            grid = generate_grid(gs, gs, dens, seed=grid_seed, ensure_connected=False)
         free_cells = list(zip(*np.where(grid.data == 0)))
         if len(free_cells) < 2:
             continue

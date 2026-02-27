@@ -87,20 +87,26 @@ class Trainer:
         self,
         data_dir: str = "data",
         checkpoint_dir: str = "checkpoints",
+        map_type: Optional[str] = None,
     ) -> None:
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
         tc = self.config.train
         nc = self.config.neural
 
-        flat_train = Path(data_dir) / "flat_train"
-        flat_val = Path(data_dir) / "flat_val"
-        recur_val = Path(data_dir) / "recur_val"
+        subdir = map_type or "default"
+        ckpt_name = f"best_{map_type}.pt" if map_type else "best.pt"
+        final_name = f"final_{map_type}.pt" if map_type else "final.pt"
+
+        flat_train = Path(data_dir) / subdir / "flat_train"
+        flat_val = Path(data_dir) / subdir / "flat_val"
+        recur_val = Path(data_dir) / subdir / "recur_val"
 
         gen_kw = dict(
             grid_sizes=[32, 64, 128, 256],
             densities=[0.1, 0.2, 0.3],
             min_path_distance=tc.min_path_distance,
             grid_resolution=nc.grid_resolution,
+            map_type=map_type,
         )
 
         if not flat_train.exists() or not any(flat_train.glob("*.npz")):
@@ -115,6 +121,7 @@ class Trainer:
                 str(recur_val), max(tc.num_val // 5, 500), seed=13,
                 grid_sizes=[32, 64, 128, 256], densities=[0.1, 0.2, 0.3],
                 min_path_distance=tc.min_path_distance,
+                map_type=map_type,
             )
 
         train_ds = FlatDataset(str(flat_train))
@@ -129,6 +136,7 @@ class Trainer:
             train_ds, val_ds, recur_val_ds,
             tc.teacher_epochs, tc.lr_teacher,
             checkpoint_dir, patience,
+            ckpt_name=ckpt_name,
         )
 
         # Phase 2 — Adversarial Mining
@@ -136,14 +144,16 @@ class Trainer:
         self._phase_adversarial(
             tc.adversarial_rounds, tc.adversarial_queries,
             tc.lr_adversarial, checkpoint_dir,
+            ckpt_name=ckpt_name,
+            map_type=map_type,
         )
 
         # Final end-to-end recall
         print("\n=== Final Evaluation ===")
-        recall = self._validate_recursive(recur_val_ds)
-        print(f"  End-to-end recall: {recall:.4f}")
+        recall, corridor = self._validate_recursive(recur_val_ds)
+        print(f"  End-to-end recall: {recall:.4f} | corridor: {corridor:.1%}")
 
-        final = Path(checkpoint_dir) / "final.pt"
+        final = Path(checkpoint_dir) / final_name
         torch.save(self.model.state_dict(), final)
         print(f"\nTraining complete. Final recall: {recall:.4f}")
 
@@ -160,6 +170,7 @@ class Trainer:
         lr: float,
         ckpt_dir: str,
         patience: int,
+        ckpt_name: str = "best.pt",
     ) -> None:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         no_improve = 0
@@ -172,8 +183,8 @@ class Trainer:
 
             recall_str = ""
             if epoch % 5 == 0 or epoch == epochs:
-                recall = self._validate_recursive(recur_val_ds)
-                recall_str = f" | e2e_recall={recall:.4f}"
+                recall, corridor = self._validate_recursive(recur_val_ds)
+                recall_str = f" | e2e_recall={recall:.4f} | corridor={corridor:.1%}"
 
             print(
                 f"  Epoch {epoch:3d}/{epochs} | "
@@ -187,7 +198,7 @@ class Trainer:
             if val_loss < best_loss:
                 best_loss = val_loss
                 no_improve = 0
-                torch.save(self.model.state_dict(), Path(ckpt_dir) / "best.pt")
+                torch.save(self.model.state_dict(), Path(ckpt_dir) / ckpt_name)
                 print(f"    -> saved (loss={best_loss:.4f})")
             else:
                 no_improve += 1
@@ -269,9 +280,14 @@ class Trainer:
     # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def _validate_recursive(self, dataset: RecursiveDataset) -> float:
+    def _validate_recursive(
+        self, dataset: RecursiveDataset,
+    ) -> tuple[float, float]:
+        """Returns (e2e_recall, avg_corridor_ratio)."""
         self.model.eval()
         tp = fn = 0
+        total_corridor = 0.0
+        total_cells = 0
         n_val = min(len(dataset), 100)
 
         for idx in tqdm(range(n_val), desc="  E2E Validation", leave=False, unit="ex"):
@@ -293,7 +309,12 @@ class Trainer:
                 else:
                     fn += 1
 
-        return tp / max(tp + fn, 1e-8)
+            total_corridor += len(active)
+            total_cells += gs * gs
+
+        recall = tp / max(tp + fn, 1e-8)
+        corridor = total_corridor / max(total_cells, 1)
+        return recall, corridor
 
     # ------------------------------------------------------------------
     # Phase 2 — adversarial mining
@@ -305,11 +326,13 @@ class Trainer:
         queries_per_round: int,
         lr: float,
         ckpt_dir: str,
+        ckpt_name: str = "best.pt",
+        map_type: Optional[str] = None,
     ) -> None:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
         for rnd in range(1, rounds + 1):
-            flat_examples = self._mine_hard_examples(queries_per_round)
+            flat_examples = self._mine_hard_examples(queries_per_round, map_type=map_type)
             if not flat_examples:
                 print(f"  Round {rnd}: no hard examples — stopping")
                 break
@@ -317,10 +340,10 @@ class Trainer:
             print(f"  Round {rnd}: training on {len(flat_examples)} flat examples")
             ds = _InMemoryFlatDataset(flat_examples)
             self._train_flat_epoch(ds, optimizer)
-            torch.save(self.model.state_dict(), Path(ckpt_dir) / "best.pt")
+            torch.save(self.model.state_dict(), Path(ckpt_dir) / ckpt_name)
 
     def _mine_hard_examples(
-        self, num_queries: int,
+        self, num_queries: int, map_type: Optional[str] = None,
     ) -> list[dict[str, np.ndarray]]:
         """Run inference, verify with BFS, extract flat examples from failures."""
         self.model.eval()
@@ -329,13 +352,25 @@ class Trainer:
         n_hard = 0
         grid_res = self.config.neural.grid_resolution
 
+        gen_fn = None
+        if map_type and map_type != "random_scatter":
+            from ui.map_generators import MAP_TYPE_GENERATORS
+            gen_fn = MAP_TYPE_GENERATORS.get(map_type)
+
         for _ in tqdm(range(num_queries), desc="  Mining", leave=False, unit="q"):
             gs = int(rng.choice([32, 64, 128, 256]))
             dens = float(rng.choice([0.1, 0.2, 0.3]))
-            grid = generate_grid(
-                gs, gs, dens, seed=int(rng.randint(0, 2**31)),
-                ensure_connected=False,
-            )
+            grid_seed = int(rng.randint(0, 2**31))
+
+            if gen_fn is not None:
+                try:
+                    grid, _, _ = gen_fn(gs, gs, density=dens, seed=grid_seed)
+                except TypeError:
+                    grid, _, _ = gen_fn(gs, gs, seed=grid_seed)
+            else:
+                grid = generate_grid(
+                    gs, gs, dens, seed=grid_seed, ensure_connected=False,
+                )
             free = list(zip(*np.where(grid.data == 0)))
             if len(free) < 2:
                 continue
@@ -373,3 +408,48 @@ class Trainer:
                 break
 
         return flat_examples
+
+    def _reset_weights(self) -> None:
+        """Re-initialize all model weights for training a fresh specialist."""
+        for m in self.model.modules():
+            if hasattr(m, "reset_parameters"):
+                m.reset_parameters()
+
+
+def main() -> None:
+    import argparse
+
+    from ui.map_generators import MAP_TYPE_KEYS
+
+    parser = argparse.ArgumentParser(description="Train QuadTreeConvNet")
+    parser.add_argument("--config", type=str, default="configs/default.yaml")
+    parser.add_argument(
+        "--map-type", type=str, choices=MAP_TYPE_KEYS,
+        help="Train a specialist for one map type",
+    )
+    parser.add_argument(
+        "--all", action="store_true",
+        help="Train specialists for all map types sequentially",
+    )
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    config = Config.from_yaml(config_path) if config_path.exists() else Config()
+
+    if args.all:
+        for mt in MAP_TYPE_KEYS:
+            print(f"\n{'=' * 60}")
+            print(f"  Training specialist: {mt}")
+            print(f"{'=' * 60}")
+            trainer = Trainer(config)
+            trainer.run(map_type=mt)
+    elif args.map_type:
+        trainer = Trainer(config)
+        trainer.run(map_type=args.map_type)
+    else:
+        trainer = Trainer(config)
+        trainer.run()
+
+
+if __name__ == "__main__":
+    main()

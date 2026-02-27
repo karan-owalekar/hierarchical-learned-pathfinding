@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark all pathfinding methods across grid sizes."""
+"""Benchmark all pathfinding methods across grid sizes and map types."""
 
 from __future__ import annotations
 
@@ -19,9 +19,36 @@ from hlp.neural.model import QuadTreeConvNet
 from hlp.pipeline import run_hybrid, run_matrix_only, run_neural_only
 from baselines.astar import astar
 from baselines.dijkstra import dijkstra
+from ui.map_generators import MAP_TYPE_GENERATORS, MAP_TYPE_KEYS, MAP_TYPE_NAMES
 
 GRID_SIZES = [32, 64, 128, 256, 512]
 NUM_TRIALS = 10
+
+
+def _generate_grid(
+    size: int, trial: int, density: float, map_type: Optional[str] = None,
+) -> tuple[Grid, Cell, Cell]:
+    """Generate a grid + start/goal for one benchmark trial."""
+    seed = trial * 1000 + size
+
+    if map_type and map_type != "random_scatter":
+        gen_fn = MAP_TYPE_GENERATORS.get(map_type)
+        if gen_fn is not None:
+            try:
+                return gen_fn(size, size, density=density, seed=seed)
+            except TypeError:
+                return gen_fn(size, size, seed=seed)
+
+    grid = generate_grid(size, size, density, seed=seed)
+    free = list(zip(*np.where(grid.data == 0)))
+    if len(free) < 2:
+        return grid, Cell(0, 0), Cell(size - 1, size - 1)
+
+    rng = np.random.RandomState(trial)
+    si, gi = rng.choice(len(free), size=2, replace=False)
+    source = Cell(int(free[si][0]), int(free[si][1]))
+    goal = Cell(int(free[gi][0]), int(free[gi][1]))
+    return grid, source, goal
 
 
 def _run_one_size(
@@ -30,8 +57,9 @@ def _run_one_size(
     args: argparse.Namespace,
     config: Config,
     model: Optional[QuadTreeConvNet],
+    map_type: Optional[str] = None,
 ) -> list[dict]:
-    """Run all methods × trials for one grid size, with per-method progress bars."""
+    """Run all methods x trials for one grid size, with per-method progress bars."""
     size_results: list[dict] = []
 
     for method_name in methods:
@@ -50,15 +78,10 @@ def _run_one_size(
         )
 
         for trial in pbar:
-            grid = generate_grid(size, size, args.density, seed=trial * 1000 + size)
+            grid, source, goal = _generate_grid(size, trial, args.density, map_type)
             free = list(zip(*np.where(grid.data == 0)))
             if len(free) < 2:
                 continue
-
-            rng = np.random.RandomState(trial)
-            si, gi = rng.choice(len(free), size=2, replace=False)
-            source = Cell(int(free[si][0]), int(free[si][1]))
-            goal = Cell(int(free[gi][0]), int(free[gi][1]))
 
             bfs_result = bfs_shortest_path(grid, source, goal)
             if bfs_result is None:
@@ -110,11 +133,10 @@ def _run_one_size(
         avg_time = np.mean(times) if times else 0.0
         avg_cost = np.mean(costs) if costs else 0.0
         opt_rate = optimal_count / total_valid
-        corr_str = ""
         if corridor_ratios:
             corr_str = f"{np.mean(corridor_ratios):>9.1%}"
         else:
-            corr_str = f"{'—':>10}"
+            corr_str = f"{'---':>10}"
 
         size_results.append({
             "grid_size": size,
@@ -123,6 +145,7 @@ def _run_one_size(
             "avg_cost": round(avg_cost, 1),
             "optimality_rate": round(opt_rate, 4),
             "valid_trials": total_valid,
+            "map_type": map_type or "random_scatter",
             "_display": (
                 f"{size:>6} | {method_name:>14} | {avg_time:>10.2f} | "
                 f"{avg_cost:>10.1f} | {opt_rate:>7.1%} | {corr_str}"
@@ -130,6 +153,39 @@ def _run_one_size(
         })
 
     return size_results
+
+
+def _load_models(config: Config) -> dict[str, QuadTreeConvNet]:
+    """Load specialist models + fallback default."""
+    nc = config.neural
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ckpt_dir = Path(nc.checkpoint_path).parent
+    models: dict[str, QuadTreeConvNet] = {}
+
+    def _try_load(path: Path) -> Optional[QuadTreeConvNet]:
+        if not path.exists():
+            return None
+        try:
+            m = QuadTreeConvNet(
+                d=nc.d, max_levels=nc.max_levels,
+                grid_resolution=nc.grid_resolution,
+            ).to(device)
+            m.load_state_dict(torch.load(path, map_location=device, weights_only=True))
+            m.eval()
+            return m
+        except Exception:
+            return None
+
+    for key in MAP_TYPE_KEYS:
+        m = _try_load(ckpt_dir / f"best_{key}.pt")
+        if m is not None:
+            models[key] = m
+
+    fallback = _try_load(Path(nc.checkpoint_path))
+    if fallback is not None:
+        models["_default"] = fallback
+
+    return models
 
 
 def main() -> None:
@@ -141,67 +197,64 @@ def main() -> None:
     parser.add_argument("--density", type=float, default=0.2)
     parser.add_argument("--all", action="store_true",
                         help="Include slow methods: BFS, Dijkstra, Matrix Only")
+    parser.add_argument(
+        "--map-type", type=str, choices=MAP_TYPE_KEYS,
+        help="Benchmark only this map type (default: all with available models)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
     config = Config.from_yaml(config_path) if config_path.exists() else Config()
 
-    model = _load_model(config)
+    models = _load_models(config)
+    if not models:
+        print("No model checkpoints found -- only classical methods will be benchmarked")
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     all_results: list[dict] = []
 
-    methods = ["A*"]
-    if model is not None:
-        methods.extend(["Neural Only", "Hybrid"])
+    base_methods = ["A*"]
     if args.all:
-        methods = ["BFS", "A*", "Dijkstra", "Matrix Only"]
-        if model is not None:
-            methods.extend(["Neural Only", "Hybrid"])
+        base_methods = ["BFS", "A*", "Dijkstra", "Matrix Only"]
+
+    map_types = [args.map_type] if args.map_type else MAP_TYPE_KEYS
 
     header = (f"{'Size':>6} | {'Method':>14} | {'Avg ms':>10} | "
               f"{'Avg Cost':>10} | {'Optimal':>8} | {'Corridor':>10}")
 
-    for size in args.grid_sizes:
-        size_results = _run_one_size(size, methods, args, config, model)
+    for mt in map_types:
+        mt_name = MAP_TYPE_NAMES[MAP_TYPE_KEYS.index(mt)]
+        model = models.get(mt) or models.get("_default")
 
-        print(header)
-        print("-" * len(header))
-        for r in size_results:
-            print(r["_display"])
-        print()
+        methods = list(base_methods)
+        if model is not None:
+            methods.extend(["Neural Only", "Hybrid"])
 
-        all_results.extend(size_results)
+        print(f"\n{'=' * 60}")
+        print(f"  Map type: {mt_name}")
+        if model is None:
+            print("  (no specialist or fallback model)")
+        print(f"{'=' * 60}")
+
+        for size in args.grid_sizes:
+            size_results = _run_one_size(size, methods, args, config, model, mt)
+
+            print(header)
+            print("-" * len(header))
+            for r in size_results:
+                print(r["_display"])
+            print()
+
+            all_results.extend(size_results)
 
     csv_fields = ["grid_size", "method", "avg_time_ms", "avg_cost",
-                  "optimality_rate", "valid_trials"]
+                  "optimality_rate", "valid_trials", "map_type"]
     with open(args.output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(all_results)
 
-    print(f"Results saved to {args.output}")
-
-
-def _load_model(config: Config) -> Optional[QuadTreeConvNet]:
-    ckpt = Path(config.neural.checkpoint_path)
-    if not ckpt.exists():
-        print(f"No checkpoint at {ckpt} — skipping neural methods")
-        return None
-    try:
-        nc = config.neural
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = QuadTreeConvNet(
-            d=nc.d,
-            max_levels=nc.max_levels,
-            grid_resolution=nc.grid_resolution,
-        ).to(device)
-        model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
-        model.eval()
-        return model
-    except Exception as e:
-        print(f"Failed to load model: {e}")
-        return None
+    print(f"\nResults saved to {args.output}")
 
 
 if __name__ == "__main__":
